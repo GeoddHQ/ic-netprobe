@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body { 
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        table { 
+            border-collapse: collapse; 
+            width: 100%;
+            margin: 20px 0;
+        }
+        th, td { 
+            border: 1px solid #ddd; 
+            padding: 12px; 
+            text-align: left; 
+        }
+        th { 
+            background-color: #f2f2f2;
+            font-weight: bold;
+        }
+        .failed { 
+            background-color: #ffebee; 
+        }
+        .warning { 
+            background-color: #fff3e0; 
+        }
+        .summary-box {
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        .status-ok {
+            color: #28a745;
+        }
+        .status-warning {
+            color: #ffc107;
+        }
+        .status-failed {
+            color: #dc3545;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>IC Node Monitoring Report</h1>
+        <p>Generated at: {{ timestamp }}</p>
+        
+        <div class="summary-box">
+            <h2>Summary</h2>
+            <table>
+                <tr>
+                    <th>Total Nodes</th>
+                    <th>Failing Nodes</th>
+                    <th>Average Latency</th>
+                </tr>
+                <tr>
+                    <td>{{ total_nodes }}</td>
+                    <td>{{ failing_nodes }}</td>
+                    <td>{{ avg_latency }}ms</td>
+                </tr>
+            </table>
+        </div>
+        
+        <h2>Node Details</h2>
+        <table>
+            <tr>
+                <th>Node ID</th>
+                <th>Region</th>
+                <th>DC Name</th>
+                <th>Failure Rate</th>
+                <th>Avg Latency</th>
+                <th>Status</th>
+            </tr>
+            {% for node in nodes %}
+            <tr class="{{ 'failed' if node.stats.failure_rate > 0 else 'warning' if node.stats.avg_latency > 1000 else '' }}">
+                <td>{{ node.node_id }}</td>
+                <td>{{ node.region }}</td>
+                <td>{{ node.dc_name }}</td>
+                <td>{{ "%.2f"|format(node.stats.failure_rate) }}%</td>
+                <td>{{ "%.2f"|format(node.stats.avg_latency) }}ms</td>
+                <td class="{{ 'status-failed' if node.stats.failure_rate > 0 else 'status-warning' if node.stats.avg_latency > 1000 else 'status-ok' }}">
+                    {{ 'Failed' if node.stats.failure_rate > 0 else 'High Latency' if node.stats.avg_latency > 1000 else 'OK' }}
+                </td>
+            </tr>
+            {% endfor %}
+        </table>
+    </div>
+</body>
+</html> 
