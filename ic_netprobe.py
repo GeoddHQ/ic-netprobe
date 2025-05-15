@@ -27,6 +27,7 @@ class ICNetProbe:
         self.ic_api_url = f"https://ic-api.internetcomputer.org/api/v3/nodes?node_provider_id={node_provider_id}"
         self.globalping_url = "https://api.globalping.io/v1/measurements"
         self.console = Console()
+        self.google_chat_webhook = os.getenv("GOOGLE_CHAT_WEBHOOK_URL")
         
         # Email configuration
         self.smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
@@ -238,6 +239,89 @@ class ICNetProbe:
         conn.commit()
         conn.close()
 
+    async def send_google_chat_notification(self, node_id: str, result: Dict, attempt: int = 1) -> None:
+        """Send measurement results to Google Chat."""
+        if not self.google_chat_webhook:
+            self.console.print("[yellow]Google Chat webhook URL not configured. Skipping notification.[/yellow]")
+            return
+
+        try:
+            # Calculate statistics
+            total_probes = len(result['results'])
+            failed_probes = sum(1 for r in result['results'] if r.get('result', {}).get('stats', {}).get('loss', 0) > 0)
+            successful_latencies = [
+                r.get('result', {}).get('stats', {}).get('avg', 0)
+                for r in result['results']
+                if r.get('result', {}).get('stats', {}).get('loss', 0) == 0
+            ]
+            avg_latency = sum(successful_latencies) / len(successful_latencies) if successful_latencies else 0
+
+            # Check for high latency probes (over 1000ms)
+            high_latency_probes = [
+                (r['probe'], r['result']['stats'])
+                for r in result['results']
+                if r.get('result', {}).get('stats', {}).get('avg', 0) > 1000
+            ]
+
+            # Format the message based on status
+            if failed_probes > 0 or high_latency_probes:
+                # Detailed message for issues
+                message = f"""⚠️ *IC Node Measurement Alert*
+
+*Node ID:* `{node_id}`
+*Timestamp:* {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}
+
+*Summary:*
+- Total Probes: {total_probes}
+- Failed Probes: {failed_probes}
+- Average Latency: {avg_latency:.2f}ms
+
+*Issues Detected:*"""
+
+                # Add failed probes
+                if failed_probes > 0:
+                    message += "\n\n*Failed Probes:*"
+                    for probe_result in result['results']:
+                        if probe_result.get('result', {}).get('stats', {}).get('loss', 0) > 0:
+                            probe = probe_result['probe']
+                            stats = probe_result['result']['stats']
+                            message += f"\n❌ {probe.get('continent', 'N/A')} - {probe.get('country', 'N/A')}: {stats.get('loss', 0)}% packet loss"
+
+                # Add high latency probes
+                if high_latency_probes:
+                    message += "\n\n*High Latency Probes:*"
+                    for probe, stats in high_latency_probes:
+                        message += f"\n⚠️ {probe.get('continent', 'N/A')} - {probe.get('country', 'N/A')}: {stats.get('avg', 'N/A')}ms"
+            else:
+                # Simple summary for healthy nodes
+                message = f"""✅ *IC Node Measurement Summary*
+
+*Node ID:* `{node_id}`
+*Timestamp:* {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}
+
+*Status:* All probes successful
+*Average Latency:* {avg_latency:.2f}ms"""
+
+            # Send to Google Chat
+            response = requests.post(
+                self.google_chat_webhook,
+                json={"text": message},
+                headers={"Content-Type": "application/json; charset=UTF-8"}
+            )
+            response.raise_for_status()
+            self.console.print("[green]✓ Notification sent to Google Chat[/green]")
+
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 429 and attempt < 5:  # Rate limit
+                delay = (2 ** attempt) * 1000  # Exponential backoff in milliseconds
+                self.console.print(f"[yellow]Rate limit exceeded. Retrying in {delay}ms...[/yellow]")
+                time.sleep(delay / 1000)  # Convert to seconds
+                await self.send_google_chat_notification(node_id, result, attempt + 1)
+            else:
+                self.console.print(f"[red]Failed to send Google Chat notification: {str(e)}[/red]")
+        except Exception as e:
+            self.console.print(f"[red]Error sending Google Chat notification: {str(e)}[/red]")
+
     def log_measurement_result(self, node_id: str, result: Dict):
         """Log measurement results to CLI with rich formatting."""
         self.console.print(f"\n[bold blue]Measurement Results for Node {node_id}[/bold blue]")
@@ -304,6 +388,10 @@ class ICNetProbe:
                 border_style="blue"
             )
             self.console.print(summary)
+
+            # Send Google Chat notification
+            import asyncio
+            asyncio.run(self.send_google_chat_notification(node_id, result))
 
     def run_measurement_cycle(self):
         """Run a complete measurement cycle."""
