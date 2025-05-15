@@ -1,4 +1,5 @@
 # IC NetProbe
+<img width="685" alt="Screenshot 2025-05-15 at 5 36 10 PM" src="https://github.com/user-attachments/assets/ad7a368a-2d3c-4237-aaae-1587d973fd36" />
 
 A monitoring tool for Internet Computer nodes that performs network measurements and provides real-time notifications.
 
