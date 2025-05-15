@@ -1,4 +1,5 @@
 # IC NetProbe
+![Uploading Screenshot 2025-05-15 at 5.36.10 PM.png…]()
 
 A monitoring system for Internet Computer (IC) nodes that measures IPv6 connectivity using Globalping probes and stores results in SQLite for reporting and analysis.
 
