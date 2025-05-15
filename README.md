@@ -1,4 +1,4 @@
-# IC Network Probe
+# IC NetProbe
 
 A monitoring tool for Internet Computer nodes that performs network measurements and provides real-time notifications.
 
