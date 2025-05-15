@@ -14,15 +14,17 @@ from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich import print as rprint
+import sys
+import argparse
 
 # Load environment variables
 load_dotenv()
 
 class ICNetProbe:
-    def __init__(self):
+    def __init__(self, node_provider_id: str):
         self.db_path = "ic_netprobe.db"
         self.globalping_api_key = os.getenv("GLOBALPING_API_KEY")
-        self.ic_api_url = "https://ic-api.internetcomputer.org/api/v3/nodes"
+        self.ic_api_url = f"https://ic-api.internetcomputer.org/api/v3/nodes?node_provider_id={node_provider_id}"
         self.globalping_url = "https://api.globalping.io/v1/measurements"
         self.console = Console()
         
@@ -72,11 +74,11 @@ class ICNetProbe:
     def fetch_nodes(self) -> List[Dict]:
         """Fetch nodes from IC API."""
         try:
+            provider_id = self.ic_api_url.split('=')[-1]
+            self.console.print(f"[yellow]Fetching nodes for provider ID: {provider_id}[/yellow]")
+            
             response = requests.get(self.ic_api_url)
             response.raise_for_status()
-            
-            # Log the raw response for debugging
-            self.console.print(f"[yellow]API Response Status: {response.status_code}[/yellow]")
             
             # Parse the JSON response
             data = response.json()
@@ -93,13 +95,36 @@ class ICNetProbe:
                     nodes.append({
                         'node_id': node['node_id'],
                         'ipv6': node['ip_address'],
-                        'region': node.get('dc_name'),
-                        'dc_name': node.get('dc_name')
+                        'region': node.get('region'),
+                        'dc_name': node.get('dc_name'),
+                        'status': node.get('status'),
+                        'node_type': node.get('node_type')
                     })
-                else:
-                    self.console.print(f"[yellow]Skipping invalid node data: {node}[/yellow]")
             
-            self.console.print(f"[green]Successfully fetched {len(nodes)} nodes[/green]")
+            # Log detailed information about the nodes
+            self.console.print(f"\n[bold cyan]Provider Information:[/bold cyan]")
+            self.console.print(f"Total Nodes: {len(nodes)}")
+            
+            # Count nodes by status
+            status_counts = {}
+            for node in nodes:
+                status = node.get('status', 'UNKNOWN')
+                status_counts[status] = status_counts.get(status, 0) + 1
+            
+            self.console.print("\n[bold cyan]Node Status Summary:[/bold cyan]")
+            for status, count in status_counts.items():
+                self.console.print(f"{status}: {count} nodes")
+            
+            # Count nodes by type
+            type_counts = {}
+            for node in nodes:
+                node_type = node.get('node_type', 'UNKNOWN')
+                type_counts[node_type] = type_counts.get(node_type, 0) + 1
+            
+            self.console.print("\n[bold cyan]Node Type Summary:[/bold cyan]")
+            for node_type, count in type_counts.items():
+                self.console.print(f"{node_type}: {count} nodes")
+            
             return nodes
             
         except requests.exceptions.RequestException as e:
@@ -156,20 +181,24 @@ class ICNetProbe:
                 }
             ],
             "measurementOptions": {
-                "packets": 16,
-                "ipVersion": 6  # Explicitly use IPv6
+                "packets": 16
             },
             "inProgressUpdates": True  # Get real-time updates
         }
         
-        response = requests.post(
-            self.globalping_url,
-            headers=headers,
-            json=payload
-        )
-        response.raise_for_status()
-        
-        return response.json()['id']
+        try:
+            response = requests.post(
+                self.globalping_url,
+                headers=headers,
+                json=payload
+            )
+            response.raise_for_status()
+            return response.json()['id']
+        except requests.exceptions.RequestException as e:
+            self.console.print(f"[red]Error creating measurement: {str(e)}[/red]")
+            if hasattr(e.response, 'text'):
+                self.console.print(f"[red]API Response: {e.response.text}[/red]")
+            raise
 
     def poll_measurement(self, measurement_id: str) -> Dict:
         """Poll measurement status until complete."""
@@ -188,7 +217,7 @@ class ICNetProbe:
             if result['status'] == 'finished':
                 return result
             
-            time.sleep(0.5)
+            time.sleep(1)
 
     def store_measurement(self, measurement_id: str, node_id: str, target: str, result: Dict):
         """Store measurement result in database."""
@@ -225,9 +254,9 @@ class ICNetProbe:
         
         if 'results' in result:
             for probe_result in result['results']:
-                if 'probe' in probe_result and 'stats' in probe_result:
+                if 'probe' in probe_result and 'result' in probe_result:
                     probe = probe_result['probe']
-                    stats = probe_result['stats']
+                    stats = probe_result['result'].get('stats', {})
                     
                     # Determine status color
                     status = "OK"
@@ -243,8 +272,8 @@ class ICNetProbe:
                     table.add_row(
                         f"{probe.get('continent', 'N/A')} - {probe.get('country', 'N/A')}",
                         f"[{status_style}]{status}[/{status_style}]",
-                        str(stats.get('packets', 'N/A')),
-                        f"{stats.get('loss', 0)}%",
+                        str(stats.get('total', 'N/A')),
+                        f"{stats.get('loss', 0)}",
                         f"{stats.get('min', 'N/A')}ms",
                         f"{stats.get('avg', 'N/A')}ms",
                         f"{stats.get('max', 'N/A')}ms"
@@ -256,8 +285,15 @@ class ICNetProbe:
         # Print summary statistics
         if 'results' in result:
             total_probes = len(result['results'])
-            failed_probes = sum(1 for r in result['results'] if r.get('stats', {}).get('loss', 0) > 0)
-            avg_latency = sum(r.get('stats', {}).get('avg', 0) for r in result['results']) / total_probes if total_probes > 0 else 0
+            failed_probes = sum(1 for r in result['results'] if r.get('result', {}).get('stats', {}).get('loss', 0) > 0)
+            
+            # Calculate average latency only from successful probes
+            successful_latencies = [
+                r.get('result', {}).get('stats', {}).get('avg', 0)
+                for r in result['results']
+                if r.get('result', {}).get('stats', {}).get('loss', 0) == 0
+            ]
+            avg_latency = sum(successful_latencies) / len(successful_latencies) if successful_latencies else 0
             
             summary = Panel(
                 f"[bold]Summary:[/bold]\n"
@@ -425,8 +461,19 @@ class ICNetProbe:
             print(f"Error sending email report: {str(e)}")
 
 def main():
-    probe = ICNetProbe()
+    # Get node provider ID from environment variable
+    node_provider_id = os.getenv("PROVIDER_ID")
+    if not node_provider_id:
+        print("Error: PROVIDER_ID environment variable is required")
+        sys.exit(1)
+        
+    probe = ICNetProbe(node_provider_id)
     last_report_time = None
+    
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='IC Network Probe')
+    parser.add_argument('--send-report', action='store_true', help='Send report immediately')
+    args = parser.parse_args()
     
     while True:
         current_time = datetime.utcnow()
@@ -434,13 +481,17 @@ def main():
         # Run measurements every 4 hours
         probe.run_measurement_cycle()
         
-        # Send daily report at the end of each day (UTC)
-        if last_report_time is None or current_time.date() > last_report_time.date():
+        # Send report every 6 hours or if --send-report flag is used
+        if args.send_report or (last_report_time is None or 
+            (current_time - last_report_time).total_seconds() >= 6 * 60 * 60):
             probe.send_email_report()
             last_report_time = current_time
+            if args.send_report:
+                # Exit after sending report if --send-report flag was used
+                break
         
         # Sleep until next measurement cycle (4 hours)
-        time.sleep(4 * 60 * 60)  # 4 hours in seconds
+        time.sleep(6 * 60 * 60)  # 4 hours in seconds
 
 if __name__ == "__main__":
     main() 
